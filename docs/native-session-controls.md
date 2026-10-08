@@ -137,6 +137,66 @@ cloud Chat editing, arbitrary settings mutation, remote transport exit guarantee
 and automatic coordinated conversation+file restoration. Runtime background,
 MCP OAuth and transport-specific failure behavior depend on the native SDK.
 
+## Regression test entry points
+
+Use Node.js 24 on Windows or Linux, with the SDK's platform optional dependency
+installed (`npm ci --include=optional`). No account, API credentials or model
+service is needed. From the repository root:
+
+```sh
+npm run test:native:compat
+npm run test:native
+npm run test:native:rewind
+```
+
+`test:native` builds this checkout and runs `scripts/native/e2e.mjs`. Each case
+creates a fresh temporary home, Claude config and workspace, launches the real
+pinned SDK/native CLI, and points it at a loopback Anthropic streaming fixture.
+The child environment is allowlisted; inherited tokens, provider overrides and
+user settings are excluded. A dummy key is only sent to loopback, and outbound
+proxy requests are refused locally. Native nonessential traffic is disabled.
+The MCP fixtures are local Node processes. Temporary files and owned processes
+are cleaned up on completion or failure; cleanup failures fail the run too.
+This is an offline protocol regression, not a model-quality or network-sandbox test.
+
+The suite asserts:
+
+- Three actual prompts before first, historical and latest same-ID rewind;
+  invalid guards fail; no provider call during rewind or process restart;
+  replay and the subsequent resend contain exactly the retained authored turns.
+- Native Read/Edit tool results, checkpoint preview without writes, actual
+  restore, preservation of unrelated files and conversation history.
+- Runtime read/reload response shapes without new prompts or chat changes.
+- MCP replacement, protected servers, revision fencing, connected status after
+  recreation, and close during a genuinely pending MCP handshake. Interrupted
+  replacement must fail and its MCP process must exit before recovery succeeds.
+- A separate worker exercises the real private `Query.request` envelope and
+  `transport.waitForExit` plus actual exit state. SDK shape drift, unsupported
+  controls, timeouts and malformed acknowledgements cannot count as success.
+
+`test:native:compat` runs focused Vitest regressions for unknown acknowledgements,
+wrong targets, missing exit evidence and lifecycle fences. The independent CI
+`native` job runs this and the complete native suite on Node 24, on Ubuntu and
+Windows; it does not depend on the existing upstream build job.
+
+For a core rewind-only checkout, `test:native:rewind` (or, after a build,
+`node scripts/native/e2e.mjs --rewind-only`) runs only `first`, `historical`,
+`latest` and `sdk-contract`. It discovers only the rewind capability and does
+not invoke file/runtime/MCP extensions. Individual cases can also be selected:
+
+```sh
+node scripts/native/e2e.mjs historical files
+node scripts/native/e2e.mjs --rewind-only sdk-contract
+```
+
+Every failed assertion, unknown case, process failure or cleanup failure exits
+nonzero. Success prints one `PASS` per completed case. No old transcript fixture
+is seeded and no transcript is rewritten by the harness. SDK upgrades must pass
+both the compatibility regressions and the real native contract again.
+To check the runner's failure path, run
+`node scripts/native/e2e.mjs --rewind-only first --inject-wrong-reply`.
+This deliberately corrupts the local provider reply and must exit 1.
+
 ## Attribution
 
 The compatible beforeMessage/resumeAtMessage contract and the original session

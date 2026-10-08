@@ -54,6 +54,11 @@ const request = z
       .refine((servers) => new Set(servers.map((s) => s.name)).size === servers.length),
   })
   .strict();
+const nativeSetResult = z.object({
+  added: z.array(z.string()),
+  removed: z.array(z.string()),
+  errors: z.record(z.string(), z.string()),
+});
 export type SessionMcpSetRequest = z.infer<typeof request>;
 export function parseSessionMcpSetRequest(value: unknown): SessionMcpSetRequest {
   const parsed = request.safeParse(value);
@@ -160,11 +165,14 @@ export async function setSessionMcpServers(
     );
   }
   try {
-    const result = await query.setMcpServers({
+    const reply = await query.setMcpServers({
       ...state.protectedServers,
       ...toSdkMcpServers(params.mcpServers),
     });
     if (!isCurrent()) throw new Error("Session changed during MCP replacement");
+    // A changed SDK envelope is not an acknowledgement of the requested set.
+    // Validate before publishing a revision or saving configuration for reload.
+    const result = nativeSetResult.parse(reply);
     // Errors can coexist with removals and successful additions. The requested
     // configuration is committed, and the client gets partial rather than an
     // error that would falsely imply no mutation occurred.
