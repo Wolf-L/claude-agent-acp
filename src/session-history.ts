@@ -56,8 +56,34 @@ export function applyRewindAnchor(
   rows: SessionStoreEntry[],
 ): SessionMessage[] {
   let anchor: string | null | undefined;
-  const byId = new Map<string, SessionStoreEntry>();
-  for (const row of rows) {
+  let anchorIndex = -1;
+  const byId = new Map<string, { row: SessionStoreEntry; index: number }>();
+  // The CLI may resume from the prompt snapshot after the retained assistant.
+  // Only snapshots written before the latest rewind may connect to the current leaf.
+  function snapshotBridge(parent: unknown, leaf: string | null): boolean {
+    if (leaf === null) return false;
+    const seen = new Set<string>();
+    while (parent !== leaf) {
+      if (typeof parent !== "string" || seen.has(parent)) return false;
+      seen.add(parent);
+      const entry = byId.get(parent);
+      if (!entry || entry.index >= anchorIndex) return false;
+      const { row } = entry;
+      const attachment = row.attachment;
+      if (
+        row.type !== "attachment" ||
+        typeof attachment !== "object" ||
+        attachment === null ||
+        !("type" in attachment) ||
+        attachment.type !== "prompt_snapshot"
+      ) {
+        return false;
+      }
+      parent = row.parentUuid;
+    }
+    return true;
+  }
+  for (const [index, row] of rows.entries()) {
     if (row.isSidechain || row.parent_tool_use_id != null || row.parent_agent_id != null) continue;
     if (
       row.uuid &&
@@ -65,9 +91,9 @@ export function applyRewindAnchor(
       ["user", "assistant", "system", "attachment"].includes(row.type)
     ) {
       const known = byId.has(row.uuid);
-      byId.set(row.uuid, row);
+      byId.set(row.uuid, { row, index });
       if (anchor !== undefined && !known) {
-        if (row.parentUuid === anchor) anchor = row.uuid;
+        if (row.parentUuid === anchor || snapshotBridge(row.parentUuid, anchor)) anchor = row.uuid;
         else if (row.type === "user" || row.type === "assistant") {
           throw new Error(
             "Conversation changed outside the retained rewind chain; reload required",
@@ -80,6 +106,7 @@ export function applyRewindAnchor(
       (row.leafUuid === null || typeof row.leafUuid === "string")
     ) {
       anchor = row.leafUuid;
+      anchorIndex = index;
     }
   }
   if (anchor === undefined) return messages;
@@ -88,7 +115,7 @@ export function applyRewindAnchor(
   let cursor: string | null = anchor;
   while (cursor !== null) {
     if (retained.has(cursor)) throw new Error("Cycle in the retained conversation chain");
-    const row = byId.get(cursor);
+    const row: SessionStoreEntry | undefined = byId.get(cursor)?.row;
     if (!row) throw new Error("Rewind anchor chain is unavailable; refusing stale history replay");
     retained.add(cursor);
     cursor = typeof row.parentUuid === "string" ? row.parentUuid : null;

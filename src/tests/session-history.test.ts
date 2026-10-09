@@ -15,7 +15,181 @@ const anchor = (leafUuid: string | null) => ({
   rewound: true,
   leafUuid,
 });
+const snapshot = (uuid: string, parentUuid: string | null): SessionStoreEntry => ({
+  type: "attachment",
+  uuid,
+  parentUuid,
+  attachment: { type: "prompt_snapshot" },
+});
+const edited: SessionStoreEntry = { type: "user", uuid: "edited", parentUuid: "hidden" };
+const reply: SessionStoreEntry = { type: "assistant", uuid: "reply", parentUuid: "edited" };
+const snapshotRows = [rows[0], rows[1], snapshot("hidden", "a1"), rows[3], rows[4]];
+const continuedMessages = [...messages, edited, reply] as SessionMessage[];
 describe("native rewind anchor replay", () => {
+  it("keeps legacy SDK history unchanged without an explicit anchor", () => {
+    expect(applyRewindAnchor(messages, snapshotRows)).toBe(messages);
+  });
+  it("continues through the existing CLI prompt snapshot after the retained assistant", () => {
+    expect(
+      applyRewindAnchor(continuedMessages, [...snapshotRows, anchor("a1"), edited, reply]).map(
+        (m) => m.uuid,
+      ),
+    ).toEqual(["u1", "a1", "edited", "reply"]);
+  });
+  it("bridges multiple pre-anchor snapshots and subsequent hidden continuation records", () => {
+    const continuation = [
+      { ...edited, parentUuid: "snapshot-2" },
+      { type: "attachment", uuid: "reminder", parentUuid: "edited" },
+      { ...reply, parentUuid: "reminder" },
+    ];
+    expect(
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        snapshot("snapshot-2", "hidden"),
+        anchor("a1"),
+        ...continuation,
+      ]).map((m) => m.uuid),
+    ).toEqual(["u1", "a1", "edited", "reply"]);
+  });
+  it("supports a repeated rewind and continuation through its pre-existing snapshot", () => {
+    const again = { ...edited, uuid: "edited-again" };
+    const againReply = { ...reply, uuid: "reply-again", parentUuid: "edited-again" };
+    expect(
+      applyRewindAnchor([...continuedMessages, again, againReply] as SessionMessage[], [
+        ...snapshotRows,
+        anchor("a1"),
+        edited,
+        reply,
+        anchor("a1"),
+        again,
+        againReply,
+      ]).map((m) => m.uuid),
+    ).toEqual(["u1", "a1", "edited-again", "reply-again"]);
+  });
+  it("allows a snapshot written before a later rewind to bridge that later anchor", () => {
+    const again = { ...edited, uuid: "edited-again", parentUuid: "new-snapshot" };
+    const discarded = { ...edited, uuid: "discarded", parentUuid: "new-snapshot" };
+    expect(
+      applyRewindAnchor([...continuedMessages, discarded, again] as SessionMessage[], [
+        ...snapshotRows,
+        anchor("a1"),
+        edited,
+        reply,
+        snapshot("new-snapshot", "reply"),
+        discarded,
+        anchor("reply"),
+        again,
+      ]).map((m) => m.uuid),
+    ).toEqual(["u1", "a1", "edited", "reply", "edited-again"]);
+  });
+  it.each(["u2", "a2", "absent", "hidden", null])(
+    "rejects a snapshot bridge through discarded, missing, cyclic or root parent %s",
+    (parent) => {
+      expect(() =>
+        applyRewindAnchor(continuedMessages, [
+          ...rows,
+          snapshot("hidden", parent),
+          anchor("a1"),
+          edited,
+        ]),
+      ).toThrow("outside the retained rewind chain");
+    },
+  );
+  it.each([
+    { type: "attachment" },
+    { type: "attachment", attachment: { type: "environment" } },
+    { type: "system", attachment: { type: "prompt_snapshot" } },
+    { type: "attachment", attachment: "prompt_snapshot" },
+    { type: "attachment", attachment: null },
+  ])("does not bridge arbitrary metadata: %j", (metadata) => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...rows,
+        { uuid: "hidden", parentUuid: "a1", ...metadata },
+        anchor("a1"),
+        edited,
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it("rejects cycles involving multiple snapshots", () => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...rows,
+        snapshot("hidden", "other-snapshot"),
+        snapshot("other-snapshot", "hidden"),
+        anchor("a1"),
+        edited,
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it.each(["user", "assistant"])("rejects a competing %s after a valid bridge", (type) => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        anchor("a1"),
+        edited,
+        reply,
+        { type, uuid: "competing", parentUuid: "hidden" },
+        anchor("a1"),
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it("does not bridge a new competing snapshot back to the original rewind anchor", () => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        anchor("a1"),
+        edited,
+        reply,
+        snapshot("competing-snapshot", "a1"),
+        { ...edited, uuid: "competing", parentUuid: "competing-snapshot" },
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it("does not trust a snapshot rewritten after the anchor", () => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        anchor("a1"),
+        snapshot("hidden", "a1"),
+        edited,
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it.each([{ isSidechain: true }, { parent_tool_use_id: "tool" }, { parent_agent_id: "agent" }])(
+    "does not bridge a sidechain snapshot: %j",
+    (sidechain) => {
+      expect(() =>
+        applyRewindAnchor(continuedMessages, [
+          rows[0],
+          rows[1],
+          { ...snapshot("hidden", "a1"), ...sidechain },
+          anchor("a1"),
+          edited,
+        ]),
+      ).toThrow("outside the retained rewind chain");
+    },
+  );
+  it("does not bridge an empty first-message rewind even through a root snapshot", () => {
+    expect(() =>
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        snapshot("root-snapshot", null),
+        anchor(null),
+        { ...edited, parentUuid: "root-snapshot" },
+      ]),
+    ).toThrow("outside the retained rewind chain");
+  });
+  it("continues a first-message rewind only from a new root", () => {
+    expect(
+      applyRewindAnchor(continuedMessages, [
+        ...snapshotRows,
+        anchor(null),
+        { ...edited, parentUuid: null },
+        reply,
+      ]).map((m) => m.uuid),
+    ).toEqual(["edited", "reply"]);
+  });
   it("returns empty for first-message anchor even when SDK returns stale messages", () => {
     expect(applyRewindAnchor(messages, [...rows, anchor(null)])).toEqual([]);
   });

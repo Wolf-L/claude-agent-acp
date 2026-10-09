@@ -18,6 +18,7 @@ export {
   toolUpdateFromToolResult,
 } from "./tools.js";
 export { SettingsManager, type SettingsManagerOptions } from "./settings.js";
+export { readSessionHistory, applyRewindAnchor } from "./session-history.js";
 // The `authStatus` extension's wire surface: the notification's method name and
 // the payload types needed to read the traffic. The mappers stay internal.
 export {
