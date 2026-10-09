@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 assert.equal(process.env.ANTHROPIC_API_KEY, "native-e2e-dummy-key");
 assert.match(process.env.ANTHROPIC_BASE_URL, /^http:\/\/127\.0\.0\.1:\d+$/);
 const uuid = randomUUID();
+const queueContract = process.argv.includes("--queue-contract");
 let release;
 const input = new Promise((r) => {
   release = r;
@@ -30,6 +31,7 @@ const q = query({
     env: process.env,
     model: "claude-sonnet-4-5-20250929",
     settingSources: [],
+    enableFileCheckpointing: true,
     tools: [],
     strictMcpConfig: true,
     settings: { disableAllHooks: true, autoMemoryEnabled: false },
@@ -52,6 +54,27 @@ try {
     }
   }
   assert.equal(resultSeen, true);
+  if (queueContract) {
+    assert.equal(typeof q.cancelAsyncMessage, "function", "SDK cancellation method disappeared");
+    assert.equal(
+      await q.cancelAsyncMessage(uuid),
+      false,
+      "a completed/dequeued message cannot be dropped",
+    );
+    assert.equal(
+      await q.cancelAsyncMessage(randomUUID()),
+      false,
+      "an absent message cannot be dropped",
+    );
+  }
+  if (queueContract) {
+    assert.equal(typeof q.rewindFiles, "function");
+    const preview = await q.rewindFiles(uuid, { dryRun: true });
+    assert.equal(typeof preview.canRewind, "boolean");
+    const mcp = await q.setMcpServers({});
+    assert.deepEqual(mcp, { added: [], removed: [], errors: {} });
+    assert.ok(Array.isArray(await q.mcpServerStatus()));
+  }
   assert.ok(q.transport.process && typeof q.transport.process.once === "function");
   // Exercise the raw private envelope as well as the production bridge.
   const refused = await q.request({
@@ -87,7 +110,16 @@ try {
       /^SIG[A-Z0-9]+$/.test(transport.process.signalCode ?? ""),
     "observer must correspond to actual OS exit",
   );
-  console.log(JSON.stringify({ request: true, rewind: true, exit: true }));
+  console.log(
+    JSON.stringify({
+      request: true,
+      rewind: true,
+      exit: true,
+      ...(queueContract
+        ? { cancelledDequeued: false, cancelledAbsent: false, rewindFiles: true, mcp: true }
+        : {}),
+    }),
+  );
 } finally {
   release();
   q.close();

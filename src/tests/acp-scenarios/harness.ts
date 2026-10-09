@@ -661,7 +661,23 @@ export function normalize(
       // the machine. Any other command stays as it is, so a recording shows it.
       if (key === "command" && node === process.execPath) return "<executable>";
       if (key === "version" && node === PACKAGE_VERSION) return "<version>";
-      const text = node.split(cwd).join("<cwd>").split(home).join("<home>");
+      // Native paths, rendered patch paths and relative file titles use different
+      // separators on Windows. Normalize only these known path representations.
+      let text = node;
+      for (const [root, label] of [
+        [cwd, "<cwd>"],
+        [home, "<home>"],
+      ]) {
+        const slashRoot = root.replaceAll("\\", "/");
+        if (/^[A-Za-z]:/.test(slashRoot)) {
+          text = text.split("a/" + slashRoot).join("a" + label);
+          text = text.split("b/" + slashRoot).join("b" + label);
+        }
+        text = text.split(root).join(label).split(slashRoot).join(label);
+      }
+      if (key === "path" || (key === "title" && /^(Read|Write|Edit) /.test(text))) {
+        text = text.replaceAll("\\", "/");
+      }
       return text.replace(UUID, (id) => {
         if (!ids.has(id)) {
           if (!generated.has(id)) return id;

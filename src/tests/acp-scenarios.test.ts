@@ -22,6 +22,7 @@
  * to `acp-scenarios/origin-main/`.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { runtimeCapability } from "../desktop-runtime.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -426,7 +427,7 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
         name: "Edit",
         status: "pending",
         kind: "edit",
-        title: "Edit src/app.ts",
+        title: `Edit ${path.join("src", "app.ts")}`,
         rawInput: {
           old_string: "const value = 1;",
           new_string: "const value = 2;",
@@ -554,7 +555,7 @@ describe.skipIf(baselineDir)("ACP scenarios", () => {
       expect(initialize.agentCapabilities._meta.claudeCode).toEqual({ promptQueueing: true });
       expect(initialize._meta).toMatchObject({
         steering: { supported: true },
-        runtime: { version: 1 },
+        runtime: runtimeCapability(),
         sessionRewind: { version: 1 },
         sessionRewindFiles: { version: 1 },
       });
